@@ -1,107 +1,118 @@
 import os
+import sys
 import time
 import requests
+from openai import OpenAI
 
-# Ortam değişkenleri (GitHub Secrets'tan gelecek)
+# ==== Ortam değişkenleri (GitHub Secrets) ====
+#   OPENAI_API_KEY
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_CHAT_ID
+
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-OPENAI_API_BASE = "https://api.openai.com/v1"
+# OpenAI client
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-def generate_sora_video(prompt: str, seconds: int = 4, size: str = "720x1280") -> str:
+def generate_sora_video(
+    prompt: str,
+    seconds: int = 4,
+    size: str = "720x1280",
+    model: str = "sora-2",
+) -> str:
     """
-    Sora ile text-to-video generation başlatır ve video_id döner.
+    Sora ile video üretir ve 'sora_video.mp4' dosya yolunu döner.
     """
-    url = f"{OPENAI_API_BASE}/videos/generations"
 
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-    }
+    # 1) Video üretim işini başlat
+    video = client.videos.create(
+        model=model,
+        prompt=prompt,
+        seconds=str(seconds),
+        size=size,
+    )
 
-    data = {
-        "model": "sora-2",           # istersen "sora-2-pro" da deneyebiliriz
-        "prompt": prompt,
-        "seconds": str(seconds),     # "4", "8", "12" gibi değerler
-        "size": size,                # "720x1280" (dikey) veya "1280x720" (yatay)
-    }
+    print("Video generation started:", video.id)
 
-    resp = requests.post(url, headers=headers, json=data)
-    print("OpenAI response status:", resp.status_code)
-    print("OpenAI response text:", resp.text)
-    resp.raise_for_status()
-    result = resp.json()
-    video_id = result["id"]
-    return video_id
+    # 2) Durumu takip et (queued / in_progress)
+    bar_length = 30
+    progress = getattr(video, "progress", 0)
+
+    while video.status in ("in_progress", "queued"):
+        # Durumu yenile
+        video = client.videos.retrieve(video.id)
+        progress = getattr(video, "progress", 0)
+
+        filled_length = int((progress / 100) * bar_length)
+        bar = "=" * filled_length + "-" * (bar_length - filled_length)
+        status_text = "Queued" if video.status == "queued" else "Processing"
+
+        sys.stdout.write(f"\r{status_text}: [{bar}] {progress:.1f}%")
+        sys.stdout.flush()
+        time.sleep(10)
+
+    sys.stdout.write("\n")
+
+    # 3) Hata var mı kontrol et
+    if video.status == "failed":
+        message = getattr(
+            getattr(video, "error", None),
+            "message",
+            "Video generation failed",
+        )
+        raise RuntimeError(f"Sora video hatası: {message}")
+
+    print("Video generation completed:", video.id)
+    print("Downloading video content...")
+
+    # 4) Videoyu indir
+    content = client.videos.download_content(video.id, variant="video")
+    output_path = "sora_video.mp4"
+    content.write_to_file(output_path)
+
+    print("Video dosyası kaydedildi:", output_path)
+    return output_path
 
 
-def download_video(video_id: str, filename: str = "output.mp4") -> str:
+def send_video_to_telegram(video_path: str, caption: str = "") -> None:
     """
-    /videos/{video_id}/content endpoint'inden MP4 indirir.
-    """
-    url = f"{OPENAI_API_BASE}/videos/{video_id}/content"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-    }
-
-    with requests.get(url, headers=headers, stream=True) as r:
-        print("Download status:", r.status_code)
-        r.raise_for_status()
-        with open(filename, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-    return filename
-
-
-def send_telegram_video(file_path: str, caption: str):
-    """
-    Telegram Bot API ile videoyu gönderir.
+    Telegram'a video gönderir.
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
 
-    with open(file_path, "rb") as video_file:
-        files = {
-            "video": video_file,
-        }
+    with open(video_path, "rb") as f:
+        files = {"video": f}
         data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "caption": caption,
         }
-        resp = requests.post(url, data=data, files=files)
-        print("Telegram status:", resp.status_code)
-        print("Telegram response:", resp.text)
-        resp.raise_for_status()
-        return resp.json()
+        resp = requests.post(url, data=data, files=files, timeout=180)
 
+    if not resp.ok:
+        raise RuntimeError(
+            f"Telegram gönderim hatası: {resp.status_code} {resp.text}"
+        )
 
-def main():
-    # Şimdilik sabit bir prompt; sonra otomatik senaryoya çevireceğiz.
-    prompt = (
-        "cinematic vertical shot of a parkour runner jumping between rooftops at sunset, "
-        "smooth camera movement, realistic lighting, very satisfying slow motion, 4 seconds"
-    )
-
-    print("Sora ile video oluşturma isteği gönderiliyor...")
-    video_id = generate_sora_video(prompt, seconds=4, size="720x1280")
-    print("Video ID alındı:", video_id)
-
-    print("Video işlenmesi için biraz bekleniyor...")
-    time.sleep(25)  # render süresi için kısa bekleme
-
-    print("MP4 dosyası indiriliyor...")
-    video_path = download_video(video_id, filename="sora_output.mp4")
-    print("İndirildi:", video_path)
-
-    print("Telegram'a gönderiliyor...")
-    tg_resp = send_telegram_video(
-        video_path,
-        caption=f"Sora ile otomatik üretilmiş video 🎥\nPrompt: {prompt}",
-    )
-    print("Telegram cevabı:", tg_resp)
+    print("Video Telegram'a gönderildi.")
 
 
 if __name__ == "__main__":
-    main()
+    # Buradaki promptu istediğin gibi değiştirebilirsin
+    PROMPT = (
+        "Short vertical 4 second video, parkour / survival / satisfying style, "
+        "dynamic camera movement, high detail, realistic lighting, smooth motion."
+    )
+
+    print("Sora ile video üretiliyor...")
+    video_file = generate_sora_video(
+        prompt=PROMPT,
+        seconds=4,
+        size="720x1280",
+        model="sora-2",
+    )
+
+    print("Telegram'a gönderiliyor...")
+    send_video_to_telegram(video_file, caption="Otomatik Sora deneme videosu ✅")
