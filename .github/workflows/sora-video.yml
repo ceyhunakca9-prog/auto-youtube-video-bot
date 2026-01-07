@@ -1,14 +1,14 @@
 name: Sora Video + Telegram
 
 on:
-  workflow_dispatch:  # Elle çalıştırmak için
+  workflow_dispatch:
 
 jobs:
   generate-and-send:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Reposu çek
+      - name: Repo'yu çek
         uses: actions/checkout@v4
 
       - name: Python kur
@@ -19,7 +19,7 @@ jobs:
       - name: Gerekli paketleri yükle
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install openai requests
 
       - name: Sora videosu üret ve Telegram'a gönder
         env:
