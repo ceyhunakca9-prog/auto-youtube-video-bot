@@ -1,0 +1,30 @@
+name: Sora Video + Telegram
+
+on:
+  workflow_dispatch:  # Elle çalıştırmak için
+
+jobs:
+  generate-and-send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reposu çek
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gerekli paketleri yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Sora videosu üret ve Telegram'a gönder
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python generate_and_send.py
